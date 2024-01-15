@@ -21,7 +21,10 @@ class F3Dataset(torch.utils.data.Dataset):
             data2 = np.load(f'{directory}/test/test1_seismic.npy')
             self.data = np.concatenate((data2, data1), axis=0).transpose(2, 0, 1)
         else:
-            data = np.load(f'{directory}/test/test2_seismic.npy')
+            try:
+                data = np.load(f'{directory}/test/test2_seismic.npy')
+            except:
+                data = np.load(f'{directory}/test_once/test2_seismic.npy')
             self.data = data.transpose(2,0,1)
         self.data = normalize(self.data)
         self.transform = transform
