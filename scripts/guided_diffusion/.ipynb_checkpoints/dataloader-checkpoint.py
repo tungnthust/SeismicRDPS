@@ -51,13 +51,13 @@ class F3Dataset(torch.utils.data.Dataset):
                 end_row = self.depth
                 start_row = self.depth - self.patch_size
             else:
-                start_row = row_idx * 48
+                start_row = row_idx * self.stride
                 end_row = start_row + self.patch_size
             if col_idx == self.num_patch_col_ilines - 1:
                 end_col = self.num_xlines
                 start_col = self.num_xlines - self.patch_size 
             else:
-                start_col = col_idx * 48
+                start_col = col_idx * self.stride
                 end_col = start_col + self.patch_size
             
             patch = self.data[int(start_row):int(end_row), int(line_idx), int(start_col):int(end_col)]
@@ -71,13 +71,13 @@ class F3Dataset(torch.utils.data.Dataset):
                 end_row = self.depth
                 start_row = self.depth - self.patch_size
             else:
-                start_row = row_idx * 48
+                start_row = row_idx * self.stride
                 end_row = start_row + self.patch_size
             if col_idx == self.num_patch_col_xlines - 1:
                 end_col = self.num_ilines
                 start_col = self.num_ilines - self.patch_size 
             else:
-                start_col = col_idx * 48
+                start_col = col_idx * self.stride
                 end_col = start_col + self.patch_size
             patch = self.data[int(start_row):int(end_row), int(start_col):int(end_col), int(line_idx)]
         patch = np.expand_dims(patch, 0)
