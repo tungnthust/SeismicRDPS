@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from math import ceil
 
 def normalize(image):
     """Basic min max scaler.
@@ -11,78 +12,63 @@ def normalize(image):
     image = image * 2 - 1
     return image
 
-class F3Dataset(torch.utils.data.Dataset):
-    def __init__(self, directory, mode="train", patch_size=128, stride=48, transform=None):
+def split_patch(data, patch_size):
+    depth, num_ilines, num_xlines = data.shape
+    num_patch_width_ilines = ceil(num_xlines // patch_size)
+    num_patch_width_xlines = ceil(num_ilines // patch_size)
+    num_patch_depth = ceil(depth // patch_size)
+    patches = []
+    for iline in range(num_ilines):
+        for y in range(num_patch_depth):
+            if y == (num_patch_depth - 1):
+                start_y = -patch_size
+                end_y = depth
+            else:
+                start_y = y*patch_size
+                end_y = (y+1)*patch_size
+            for x in range(num_patch_width_ilines):
+                if x == (num_patch_width_ilines - 1):
+                    start_x = -patch_size
+                    end_x = num_xlines
+                else:
+                    start_x = x*patch_size
+                    end_x = (x+1)*patch_size
+                patches.append(data[start_y:end_y, iline, start_x:end_x])
+    for xline in range(num_xlines):
+        for y in range(num_patch_depth):
+            if y == (num_patch_depth - 1):
+                start_y = -patch_size
+                end_y = depth
+            else:
+                start_y = y*patch_size
+                end_y = (y+1)*patch_size
+            for x in range(num_patch_width_xlines):
+                if x == (num_patch_width_xlines - 1):
+                    start_x = -patch_size
+                    end_x = num_ilines
+                else:
+                    start_x = x*patch_size
+                    end_x = (x+1)*patch_size
+                patches.append(data[start_y:end_y, start_x:end_x, xline])
+    return patches
+    
+class SeismicDataset(torch.utils.data.Dataset):
+    def __init__(self, directory='/poc-data/pvn/data', mode="train", datasets=['F3', 'Kerry3D'], patch_size=128, transform=None):
         
         super().__init__()
-        self.data = None
-        if mode == "train":
-            data1 = np.load(f'{directory}/train/train_seismic.npy')
-            data2 = np.load(f'{directory}/test/test1_seismic.npy')
-            self.data = np.concatenate((data2, data1), axis=0).transpose(2, 0, 1)
-        else:
-            try:
-                data = np.load(f'{directory}/test/test2_seismic.npy')
-            except:
-                data = np.load(f'{directory}/test_once/test2_seismic.npy')
-            self.data = data.transpose(2,0,1)
-        self.data = normalize(self.data)
+        self.data = []
         self.transform = transform
-        self.depth = int(self.data.shape[0])
-        self.num_ilines = int(self.data.shape[1])
-        self.num_xlines = int(self.data.shape[2])
-
-        self.patch_size = patch_size
-        self.stride = stride
-        self.num_patch_row = np.ceil((self.depth - self.patch_size) / self.stride + 1)
-        self.num_patch_col_ilines = np.ceil((self.num_xlines - self.patch_size) / self.stride + 1)
-        self.num_patch_col_xlines = np.ceil((self.num_ilines - self.patch_size) / self.stride + 1)
-        self.num_patch_per_iline = self.num_patch_row * self.num_patch_col_ilines
-        self.num_patch_per_xline = self.num_patch_row * self.num_patch_col_xlines
-        self.num_patch_ilines = self.num_patch_per_iline * self.num_ilines
-        self.num_patch_xlines = self.num_patch_per_xline * self.num_xlines
-        self.num_patch = int(self.num_patch_ilines + self.num_patch_xlines)
-        print(f"Number data: {self.num_patch}")
+        for dataset in datasets:
+            data = np.load(f'{directory}/{dataset}/{mode}.npy').transpose(2, 0, 1)
+            data = normalize(data)
+            
+            patches = split_patch(data, patch_size)
+            self.data.extend(patches)
+            
+        print(f"Number data: {len(self.data)}")
 
     def __getitem__(self, idx):
-        if idx < self.num_patch_ilines:
-            line_idx = idx // self.num_patch_per_iline
-            patch_idx = idx % self.num_patch_per_iline
-            row_idx = patch_idx // self.num_patch_col_ilines
-            col_idx = patch_idx % self.num_patch_col_ilines
-            if row_idx == self.num_patch_row - 1:
-                end_row = self.depth
-                start_row = self.depth - self.patch_size
-            else:
-                start_row = row_idx * self.stride
-                end_row = start_row + self.patch_size
-            if col_idx == self.num_patch_col_ilines - 1:
-                end_col = self.num_xlines
-                start_col = self.num_xlines - self.patch_size 
-            else:
-                start_col = col_idx * self.stride
-                end_col = start_col + self.patch_size
-            
-            patch = self.data[int(start_row):int(end_row), int(line_idx), int(start_col):int(end_col)]
-        else:
-            idx = idx - self.num_patch_ilines
-            line_idx = idx // self.num_patch_per_xline
-            patch_idx = idx % self.num_patch_per_xline
-            row_idx = patch_idx // self.num_patch_col_xlines
-            col_idx = patch_idx % self.num_patch_col_xlines
-            if row_idx == self.num_patch_row - 1:
-                end_row = self.depth
-                start_row = self.depth - self.patch_size
-            else:
-                start_row = row_idx * self.stride
-                end_row = start_row + self.patch_size
-            if col_idx == self.num_patch_col_xlines - 1:
-                end_col = self.num_ilines
-                start_col = self.num_ilines - self.patch_size 
-            else:
-                start_col = col_idx * self.stride
-                end_col = start_col + self.patch_size
-            patch = self.data[int(start_row):int(end_row), int(start_col):int(end_col), int(line_idx)]
+        patch = self.data[idx]
         patch = np.expand_dims(patch, 0)
         if self.transform:
             patch = self.transform(torch.Tensor(patch))
@@ -90,4 +76,4 @@ class F3Dataset(torch.utils.data.Dataset):
         return np.float32(patch), cond
 
     def __len__(self):
-        return self.num_patch
+        return len(self.data)

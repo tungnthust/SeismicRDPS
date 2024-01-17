@@ -6,7 +6,7 @@ import argparse
 import torch as th
 sys.path.append("..")
 sys.path.append(".")
-from guided_diffusion.dataloader import F3Dataset
+from guided_diffusion.dataloader import SeismicDataset
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
@@ -40,14 +40,13 @@ def main():
                 transforms.RandomVerticalFlip(p=0.5),
                 transforms.RandomRotation(90)
     ], p=0.5)
-    
-    if args.dataset == 'F3':
-        print("Training on F3 dataset")
-        ds = F3Dataset(args.data_dir, transform=data_transform)
-        datal = th.utils.data.DataLoader(
-            ds,
-            batch_size=args.batch_size,
-            shuffle=True)
+    dataset = args.dataset
+    print("Training on dataset(s): ", dataset)
+    ds = SeismicDataset(args.data_dir, mode='train', datasets=dataset.split(','), transform=data_transform)
+    datal = th.utils.data.DataLoader(
+        ds,
+        batch_size=args.batch_size,
+        shuffle=True)
 
     logger.log("training...")
     TrainLoop(
@@ -84,7 +83,7 @@ def create_argparser():
         resume_checkpoint='',
         use_fp16=False,
         fp16_scale_growth=1e-3,
-        dataset='F3'
+        dataset='F3,Kerry3D'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
