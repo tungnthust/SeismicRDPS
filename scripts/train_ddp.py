@@ -33,7 +33,7 @@ def init_processes(rank, world_size, gpu_id, args):
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     device = th.device('cuda:{}'.format(gpu_id))
-    model.to()
+    model.to(device)
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     TrainLoop(
@@ -68,7 +68,7 @@ def cleanup():
 def main():
     args = create_argparser().parse_args()
 
-    dist_util.setup_dist()
+    # dist_util.setup_dist()
     logger.configure()
 
     logger.log("creating model and diffusion...")
