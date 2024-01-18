@@ -181,7 +181,10 @@ class TrainLoop:
         ):
             try:
                 batch, cond = next(self.data)
+                print(len(2))
             except:
+                print('ts')
+                self.train_sampler.set_epoch(self.step)
                 self.iterdatal = iter(self.data)
                 batch, cond = next(self.iterdatal)
             self.run_step(batch, cond)
