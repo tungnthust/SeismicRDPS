@@ -114,7 +114,7 @@ class TrainLoop:
             self.use_ddp = True
             self.ddp_model = DDP(
                 self.model,
-                device_ids=self.device,
+                device_ids=[self.device],
                 find_unused_parameters=True,
             )
         else:
