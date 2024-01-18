@@ -42,7 +42,7 @@ def main():
     ], p=0.5)
     dataset = args.dataset
     print("Training on dataset(s): ", dataset)
-    ds = SeismicDataset(args.data_dir, mode='train', datasets=dataset.split(','), transform=data_transform)
+    ds = SeismicDataset(args.data_dir, mode=args.mode, datasets=dataset.split(','), transform=data_transform)
     datal = th.utils.data.DataLoader(
         ds,
         batch_size=args.batch_size,
@@ -84,6 +84,7 @@ def create_argparser():
         use_fp16=False,
         fp16_scale_growth=1e-3,
         dataset='F3,Kerry3D',
+        mode='train'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
