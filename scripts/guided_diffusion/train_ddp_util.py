@@ -187,6 +187,7 @@ class TrainLoop:
                 self.train_sampler.set_epoch(self.step)
                 self.iterdatal = iter(self.data)
                 batch, cond = next(self.iterdatal)
+                print('a')
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
