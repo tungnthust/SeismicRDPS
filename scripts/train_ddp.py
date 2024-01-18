@@ -40,7 +40,7 @@ def init_processes(rank, world_size, gpu_id, args):
         model=model,
         diffusion=diffusion,
         data=args.data,
-        batch_size=args.batch_size,
+        batch_size=args.per_device_batch_size,
         microbatch=args.microbatch,
         lr=args.lr,
         ema_rate=args.ema_rate,
