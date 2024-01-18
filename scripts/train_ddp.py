@@ -93,7 +93,7 @@ def main():
     if num_gpu > 1:
         print(f'Training on {num_gpu} GPUs: {args.cuda_devices}') 
         processes = []
-        for rank, gpu_id in args.cuda_devices.split(','):
+        for rank, gpu_id in enumerate(args.cuda_devices.split(',')):
             
             p = Process(target=init_processes, args=(rank, world_size, gpu_id, args))
             p.start()
