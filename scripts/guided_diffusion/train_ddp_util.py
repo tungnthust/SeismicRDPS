@@ -47,7 +47,6 @@ class TrainLoop:
         self.model = model
         self.diffusion = diffusion
         
-        self.iterdatal = iter(self.data)
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
@@ -85,6 +84,7 @@ class TrainLoop:
                                             sampler=self.train_sampler,
                                             drop_last = True)
         
+        self.iterdatal = iter(self.data)
         self.sync_cuda = th.cuda.is_available()
 
         self._load_and_sync_parameters()
