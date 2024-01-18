@@ -14,9 +14,9 @@ def normalize(image):
 
 def split_patch(data, patch_size):
     depth, num_ilines, num_xlines = data.shape
-    num_patch_width_ilines = ceil(num_xlines // patch_size)
-    num_patch_width_xlines = ceil(num_ilines // patch_size)
-    num_patch_depth = ceil(depth // patch_size)
+    num_patch_width_ilines = ceil(num_xlines / patch_size)
+    num_patch_width_xlines = ceil(num_ilines / patch_size)
+    num_patch_depth = ceil(depth / patch_size)
     patches = []
     for iline in range(num_ilines):
         for y in range(num_patch_depth):
@@ -60,6 +60,7 @@ class SeismicDataset(torch.utils.data.Dataset):
         self.transform = transform
         for dataset in datasets:
             data = np.load(f'{directory}/{dataset}/{mode}.npy').transpose(2, 0, 1)
+            print(data.shape)
             data = normalize(data)
             
             patches = split_patch(data, patch_size)
