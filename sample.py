@@ -21,6 +21,7 @@ import numpy as np
 import random
 # from piq import ssim, psnr
 from skimage.metrics import structural_similarity, peak_signal_noise_ratio
+from scripts.guided_diffusion.logger import CSVOutputFormat
 
 def normalize(image):
     """Basic min max scaler.
@@ -33,7 +34,7 @@ def snr_(gt, pred):
     
 def get_metric(gt, pred):
     
-    ssim_score = structural_similarity(np.array(gt)[:, :, 0], np.array(pred)[:, :, 0])
+    ssim_score = structural_similarity(np.array(gt)[:, :, 0], np.array(pred)[:, :, 0], win_size=11)
     psnr_score = peak_signal_noise_ratio(np.array(gt)[:, :, 0], np.array(pred)[:, :, 0])
     gt = normalize(gt.unsqueeze(0).permute(0, 3, 1, 2))
     pred = normalize(pred.unsqueeze(0).permute(0, 3, 1, 2))
@@ -235,8 +236,13 @@ def main():
                                 ds,
                                 batch_size=batch_size,
                                 shuffle=False)
+    csvwriter = CSVOutputFormat(f'evaluation_results/result_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}.csv')
     n_sample = 0
     for idx, img in enumerate(dataset):
+        if n_sample < args.start_idx - 1:
+            n_sample += img[0].shape[0]
+            continue
+        
         mask = th.ones((image_size, image_size))
         for j in sample_idx:
             mask[:, j] = 0
@@ -272,8 +278,10 @@ def main():
             snr_scores.append(snr_score)
             np.savez_compressed(f'samples/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), sample=np.array(sample[i]))
             print(f"{n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
+            csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
             n_sample += 1        
-
+            if n_sample == args.end_idx:
+                break
         # metrics = zip(ssim_scores, psnr_scores, snr_scores)
         # for i, v in enumerate(metrics):
             
@@ -292,6 +300,8 @@ def create_argparser():
         mask_ratio=0.1,
         noise_scale=0.1,
         gradient_scale=0.5,
+        start_idx=0,
+        end_idx=-1
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
