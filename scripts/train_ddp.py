@@ -26,7 +26,7 @@ NUM_NODE = 1
 def init_processes(rank, world_size, gpu_id, args):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '6026'
+    os.environ['MASTER_PORT'] = '6027'
 
     dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=world_size)
     model, diffusion = create_model_and_diffusion(

@@ -66,13 +66,13 @@ class TrainLoop:
         self.seed = seed
         self.device = device
         self.rank = rank
-        self.training_seed = self.seed + self.seed
+        self.training_seed = self.seed + self.rank
         self.num_workers = num_workers
         self.world_size = world_size
         self.step = 0
         self.resume_step = 0
         self.global_batch = self.batch_size * dist.get_world_size()
-
+        self.w = None
         self.train_sampler = th.utils.data.distributed.DistributedSampler(data,
                                                                     num_replicas=self.world_size,
                                                                     rank=rank)
@@ -93,7 +93,7 @@ class TrainLoop:
             use_fp16=self.use_fp16,
             fp16_scale_growth=fp16_scale_growth,
         )
-
+        print(f'Rank: {self.rank} - Device: {self.device} {dist.get_rank()}')
         self.opt = AdamW(
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
@@ -114,8 +114,7 @@ class TrainLoop:
             self.use_ddp = True
             self.ddp_model = DDP(
                 self.model,
-                device_ids=[self.device],
-                find_unused_parameters=True,
+                device_ids=[self.device]
             )
         else:
             if dist.get_world_size() > 1:
@@ -136,7 +135,7 @@ class TrainLoop:
                 logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
                 self.model.load_state_dict(
                     dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
+                        resume_checkpoint
                     )
                 )
 
@@ -151,7 +150,7 @@ class TrainLoop:
             if dist.get_rank() == 0:
                 logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
                 state_dict = dist_util.load_state_dict(
-                    ema_checkpoint, map_location=dist_util.dev()
+                    ema_checkpoint
                 )
                 ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
 
@@ -166,7 +165,7 @@ class TrainLoop:
         if bf.exists(opt_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
             state_dict = dist_util.load_state_dict(
-                opt_checkpoint, map_location=dist_util.dev()
+                opt_checkpoint
             )
             self.opt.load_state_dict(state_dict)
 
@@ -187,7 +186,8 @@ class TrainLoop:
                 batch, cond = next(self.iterdatal)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
-                logger.dumpkvs()
+                if self.rank == 0:
+                    logger.dumpkvs()
             if self.step % self.save_interval == 0:
                 self.save()
                 # Run for a finite amount of time in integration tests.
@@ -195,9 +195,8 @@ class TrainLoop:
                     return
             self.step += 1
         # Save the last checkpoint if it wasn't already saved.
-        if self.rank == 0:
-            if (self.step - 1) % self.save_interval != 0:
-                self.save()
+        if (self.step - 1) % self.save_interval != 0:
+            self.save()
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
@@ -209,8 +208,14 @@ class TrainLoop:
             self.log_step()
 
     def forward_backward(self, batch, cond):
-        self.mp_trainer.zero_grad()
+        # if self.rank == 0:
+        #     if self.w is not None:
+        #         diff = self.model.out[-1].weight - self.w
+        #         print(f'Step {self.step} Before {self.model.out[-1].weight * 10000}')
+        #         print(f'Step {self.step} Diff: {diff * 10000}')
+        self.mp_trainer.zero_grad()   
         for i in range(0, batch.shape[0], self.microbatch):
+            
             micro = batch[i : i + self.microbatch].to(self.device, non_blocking=True)
             micro_cond = {
                 k: v[i : i + self.microbatch].to(self.device, non_blocking=True)
@@ -218,7 +223,7 @@ class TrainLoop:
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], self.device)
-
+            # print(f'Step {self.step} Rank {self.rank} Data {micro.sum()}')
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
                 self.ddp_model,
@@ -244,6 +249,10 @@ class TrainLoop:
                     self.diffusion, t, {k: v * weights for k, v in losses.items()}
                 )
             self.mp_trainer.backward(loss)
+            # if self.rank == 0:
+            # self.w_grad = self.model.out[-1].weight.grad
+            # self.w = self.model.out[-1].weight
+            # print(f'Step {self.step} After Rank{self.rank}: {loss * 10000}, Loss: {self.w_grad * 10000}')
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
@@ -272,12 +281,11 @@ class TrainLoop:
                     filename = f"ckpt/ema_{rate}_{(self.step+self.resume_step):06d}.pt"
                 with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     th.save(state_dict, f)
-
-        save_checkpoint(0, self.mp_trainer.master_params)
-        for rate, params in zip(self.ema_rate, self.ema_params):
-            save_checkpoint(rate, params)
-
         if self.rank == 0:
+            save_checkpoint(0, self.mp_trainer.master_params)
+            for rate, params in zip(self.ema_rate, self.ema_params):
+                save_checkpoint(rate, params)
+    
             with bf.BlobFile(
                 bf.join(get_blob_logdir(), f"ckpt/opt{(self.step+self.resume_step):06d}.pt"),
                 "wb",
