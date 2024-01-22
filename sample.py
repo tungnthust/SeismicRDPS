@@ -280,8 +280,8 @@ def main():
             print(f"{n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
             csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
             n_sample += 1        
-            if n_sample == args.end_idx:
-                break
+        if n_sample >= args.end_idx:
+            break
         # metrics = zip(ssim_scores, psnr_scores, snr_scores)
         # for i, v in enumerate(metrics):
             
