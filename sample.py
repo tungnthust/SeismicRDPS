@@ -22,7 +22,14 @@ import random
 # from piq import ssim, psnr
 from skimage.metrics import structural_similarity, peak_signal_noise_ratio
 from scripts.guided_diffusion.logger import CSVOutputFormat
+from swin import SCRN, ConvTransBlock, Block, WMSA
+import scipy
+from ssim_util import SSIM
+from ddnm import svd_based_ddnm_plus
+from scripts.functions.svd_replacement import Inpainting
+from gdp import general_cond_fn
 
+ssim_loss = SSIM(11, size_average=True)
 def normalize(image):
     """Basic min max scaler.
     """
@@ -48,12 +55,14 @@ def visualize(sample):
 
 from abc import ABC, abstractmethod
 import torch
+from wavelet_util import DWT_2D
 
 class ConditioningMethod(ABC):
     def __init__(self, operator, noiser, **kwargs):
         self.operator = operator
         self.noiser = noiser
-    
+        self.dwt = DWT_2D("haar")
+        
     def project(self, data, noisy_measurement, **kwargs):
         return self.operator.project(data=data, measurement=noisy_measurement, **kwargs)
     
@@ -83,10 +92,35 @@ class ConditioningMethod(ABC):
 # #             raise NotImplementedError
              
 #         return th.stack(norm_grads), th.stack(norm).mean()
-        difference = measurement - self.operator.forward(x_0_hat, **kwargs)
+        x_0_hat = self.operator.forward(x_0_hat, **kwargs)
+        xLL, xLH, xHL, xHH = self.dwt(x_0_hat)
+
+        x = th.cat((xLL, xLH, xHL, xHH), dim=1) / 2.0
+        
+        measurement_filter = th.clone(measurement).cpu().numpy()
+        
+        for i in range(x_0_hat.shape[0]):
+            measurement_filter[i][0] = scipy.ndimage.gaussian_filter(measurement[i][0].cpu().numpy(), 0.05) 
+        measurement_filter = th.tensor(measurement_filter).to(th.device('cuda:0'))
+        mLL, mLH, mHL, mHH = self.dwt(measurement_filter)
+        step_ratio = kwargs.get('step', 1.0)
+        measurement_filter = th.cat((mLL, mLH, mHL, mHH), dim=1) / 2.0
+        
+        # norm = th.zeros((x.shape[0], 4)).to(th.device('cuda:0'))
+        # for _ in range(5):
+        #     # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
+        #     x_0_hat_noise = x + 0.00001 * torch.rand_like(x)
+        loss = ssim_loss(measurement_filter, x)
+        full_loss = ssim_loss(measurement, x_0_hat)
+        # print(norm.shape)
+        difference = measurement_filter - x
+        norm = torch.linalg.norm(difference, dim=(2,3))
+        weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(th.device('cuda:0'))
+        norm = norm * weight + loss * weight * step_ratio * 5
+        # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
 #         difference = measurement - x_0_hat
 
-        norm = torch.linalg.norm(difference, dim=(2,3))
+        # norm = torch.linalg.norm(difference, dim=(2,3))
         grad_outputs = torch.ones_like(norm)
         norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev, grad_outputs=grad_outputs)[0]
         
@@ -113,7 +147,9 @@ class PosteriorSampling(ConditioningMethod):
 
     def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs):
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
-        x_t -= norm_grad * self.scale
+        step_ratio = kwargs.get('step', 1.0)
+        step_size = step_ratio
+        x_t -= norm_grad * (self.scale  * step_size + 0.25)
         return x_t, norm
 
 class LinearOperator(ABC):
@@ -171,6 +207,7 @@ class GaussianNoise(Noise):
 def p_sample_loop_dps(model,
                       diffusion,
                       shape,
+                      original,
                       measurement,
                       measurement_cond_fn):
         """
@@ -193,14 +230,21 @@ def p_sample_loop_dps(model,
             # TODO: how can we handle argument for different condition method?
             img, distance = measurement_cond_fn(x_t=out['sample'],
                                       measurement=measurement,
+                                      step=idx/diffusion.num_timesteps,
                                       # noisy_measurement=noisy_measurement,
                                       x_prev=img,
                                       x_0_hat=out['pred_xstart'])
             img = img.detach_()
-           
-            pbar.set_postfix({'distance': distance.item()}, refresh=False)
 
-        return img       
+            outs = visualize(out['pred_xstart'])
+            # spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(3)
+            # final = sample * (1 - spatial_mask) + original * spatial_mask
+            for i in range(outs.shape[0]):
+                ssim_score, psnr_score, snr_score = get_metric(original[i], outs[i])
+           
+            pbar.set_postfix({'distance': distance.item(), 'ssim': ssim_score}, refresh=False)
+
+        return out['pred_xstart']       
 
 def main():
     args = create_argparser().parse_args()
@@ -220,7 +264,11 @@ def main():
     if args.use_fp16:
         model.convert_to_fp16()
     model.eval()
-    
+
+    swin_model = th.load(args.swin_model_path)
+    swin_model.to(device)
+    swin_model.eval()
+
     image_size = args.image_size
     
     proportion = args.mask_ratio
@@ -236,6 +284,10 @@ def main():
                                 ds,
                                 batch_size=batch_size,
                                 shuffle=False)
+    def model_fn(x, t, y=None):
+        return model(x, t)
+    
+    
     csvwriter = CSVOutputFormat(f'evaluation_results/result_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}.csv')
     n_sample = 0
     for idx, img in enumerate(dataset):
@@ -243,12 +295,12 @@ def main():
             n_sample += img[0].shape[0]
             continue
         
-        mask = th.ones((image_size, image_size))
+        spatial_mask = th.ones((image_size, image_size))
         for j in sample_idx:
-            mask[:, j] = 0
-        mask = mask.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
+            spatial_mask[:, j] = 0
+        mask = spatial_mask.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
         measurement_cond_fn = partial(cond_method.conditioning, mask=mask)
-        
+        model_kwargs = {}
         if th.cuda.is_available():
             img[0] = th.Tensor(img[0]).to(device)
         sample_fn = p_sample_loop_dps 
@@ -256,29 +308,50 @@ def main():
         y = operator.forward(img[0], mask=mask)
         measurement = noiser(y)
         shape = img[0].shape
-            
-        sample = sample_fn(model,
-                           diffusion,
-                           shape,
-                           measurement,
-                           measurement_cond_fn)
-        
+    
         original = visualize(img[0])
+        if args.method == 'dps':
+            sample = sample_fn(model,
+                               diffusion,
+                               shape,
+                               original,
+                               measurement,
+                               measurement_cond_fn)
+        elif args.method == 'ddnm':
+            sample = svd_based_ddnm_plus(model, diffusion, measurement, mask, diffusion.num_timesteps, device)
+
+        elif args.method == 'gdp':
+            mask = spatial_mask.reshape(-1)
+            missing = th.nonzero(mask == 0).long().reshape(-1)
+            H_funcs = Inpainting(shape[1], image_size, missing, device)
+            cond_fn = lambda x,t : general_cond_fn(H_funcs, x, t, x_lr=measurement, sample_noisy_x_lr=True, diffusion=diffusion, sample_noisy_x_lr_t_thred=1e8)
+            sample = diffusion.p_sample_loop(model_fn,
+                                            shape,
+                                            clip_denoised=True,
+                                            model_kwargs=model_kwargs,
+                                            cond_fn=cond_fn,
+                                            device=device,
+                                            progress=True
+                                        )
+
+            
+        with th.no_grad():
+            swin_sample = swin_model(measurement)
+            
         masked_image = visualize(measurement)
         sample = visualize(sample)
-        ssim_scores = []
-        psnr_scores = []
-        snr_scores = []
+        swin_sample = visualize(swin_sample)
         # spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(3)
         # final = sample * (1 - spatial_mask) + original * spatial_mask
         for i in range(batch_size):
             ssim_score, psnr_score, snr_score = get_metric(original[i], sample[i])
-            ssim_scores.append(ssim_score)
-            psnr_scores.append(psnr_score)
-            snr_scores.append(snr_score)
-            np.savez_compressed(f'samples/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), sample=np.array(sample[i]))
-            print(f"{n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
-            csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
+            swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
+            
+            np.savez_compressed(f'samples/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]), swin_sample=np.array(swin_sample[i]))
+            print(f"[Diffusion] {n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
+            print(f"[Swin] {n_sample}: SSIM: {swin_ssim_score} - PSNR: {swin_psnr_score} - SNR: {swin_snr_score}")
+            csvwriter.writekvs({'id': n_sample, 'diffusion_ssim': ssim_score, 'diffusion_psnr': psnr_score, 'diffusion_snr': snr_score,
+                               'swin_ssim': swin_ssim_score, 'swin_psnr': swin_psnr_score, 'swin_snr': swin_snr_score})
             n_sample += 1        
         if n_sample >= args.end_idx:
             break
@@ -292,6 +365,7 @@ def create_argparser():
         schedule_sampler="uniform",
         batch_size=1,
         model_path='',
+        swin_model_path='',
         use_fp16=False,
         dataset='F3,Kerry3D',
         mode='validation',
@@ -301,7 +375,8 @@ def create_argparser():
         noise_scale=0.1,
         gradient_scale=0.5,
         start_idx=0,
-        end_idx=-1
+        end_idx=-1,
+        method='dps'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
