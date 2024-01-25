@@ -349,16 +349,16 @@ def main():
             
         masked_image = visualize(measurement)
         sample = visualize(sample)
-        swin_sample = visualize(swin_sample)
+        # swin_sample = visualize(swin_sample)
         # spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(3)
         # final = sample * (1 - spatial_mask) + original * spatial_mask
         for i in range(batch_size):
             ssim_score, psnr_score, snr_score = get_metric(original[i], sample[i])
-            swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
+            # swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
             
-            np.savez_compressed(f'{output_directory}/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]), swin_sample=np.array(swin_sample[i]))
+            np.savez_compressed(f'{output_directory}/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]))
             print(f"[Diffusion] {n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
-            print(f"[Swin] {n_sample}: SSIM: {swin_ssim_score} - PSNR: {swin_psnr_score} - SNR: {swin_snr_score}")
+            # print(f"[Swin] {n_sample}: SSIM: {swin_ssim_score} - PSNR: {swin_psnr_score} - SNR: {swin_snr_score}")
             csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
             n_sample += 1        
         if n_sample >= args.end_idx:
