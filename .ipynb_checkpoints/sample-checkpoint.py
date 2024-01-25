@@ -92,35 +92,35 @@ class ConditioningMethod(ABC):
 # #             raise NotImplementedError
              
 #         return th.stack(norm_grads), th.stack(norm).mean()
-        x_0_hat = self.operator.forward(x_0_hat, **kwargs)
-        xLL, xLH, xHL, xHH = self.dwt(x_0_hat)
+        # x_0_hat = self.operator.forward(x_0_hat, **kwargs)
+        # xLL, xLH, xHL, xHH = self.dwt(x_0_hat)
 
-        x = th.cat((xLL, xLH, xHL, xHH), dim=1) / 2.0
+        # x = th.cat((xLL, xLH, xHL, xHH), dim=1) / 2.0
         
-        measurement_filter = th.clone(measurement).cpu().numpy()
+        # measurement_filter = th.clone(measurement).cpu().numpy()
         
-        for i in range(x_0_hat.shape[0]):
-            measurement_filter[i][0] = scipy.ndimage.gaussian_filter(measurement[i][0].cpu().numpy(), 0.05) 
-        measurement_filter = th.tensor(measurement_filter).to(th.device('cuda:0'))
-        mLL, mLH, mHL, mHH = self.dwt(measurement_filter)
-        step_ratio = kwargs.get('step', 1.0)
-        measurement_filter = th.cat((mLL, mLH, mHL, mHH), dim=1) / 2.0
+        # for i in range(x_0_hat.shape[0]):
+        #     measurement_filter[i][0] = scipy.ndimage.gaussian_filter(measurement[i][0].cpu().numpy(), 0.05) 
+        # measurement_filter = th.tensor(measurement_filter).to(th.device('cuda:0'))
+        # mLL, mLH, mHL, mHH = self.dwt(measurement_filter)
+        # step_ratio = kwargs.get('step', 1.0)
+        # measurement_filter = th.cat((mLL, mLH, mHL, mHH), dim=1) / 2.0
         
-        # norm = th.zeros((x.shape[0], 4)).to(th.device('cuda:0'))
-        # for _ in range(5):
-        #     # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
-        #     x_0_hat_noise = x + 0.00001 * torch.rand_like(x)
-        loss = ssim_loss(measurement_filter, x)
-        full_loss = ssim_loss(measurement, x_0_hat)
-        # print(norm.shape)
-        difference = measurement_filter - x
-        norm = torch.linalg.norm(difference, dim=(2,3))
-        weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(th.device('cuda:0'))
-        norm = norm * weight + loss * weight * step_ratio * 5
-        # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
-#         difference = measurement - x_0_hat
-
+        # # norm = th.zeros((x.shape[0], 4)).to(th.device('cuda:0'))
+        # # for _ in range(5):
+        # #     # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
+        # #     x_0_hat_noise = x + 0.00001 * torch.rand_like(x)
+        # loss = ssim_loss(measurement_filter, x)
+        # full_loss = ssim_loss(measurement, x_0_hat)
+        # # print(norm.shape)
+        # difference = measurement_filter - x
         # norm = torch.linalg.norm(difference, dim=(2,3))
+        # weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(th.device('cuda:0'))
+        # norm = norm * weight + loss * weight * step_ratio * 5
+        # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
+        difference = measurement - x_0_hat
+
+        norm = torch.linalg.norm(difference, dim=(2,3))
         grad_outputs = torch.ones_like(norm)
         norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev, grad_outputs=grad_outputs)[0]
         
@@ -149,7 +149,7 @@ class PosteriorSampling(ConditioningMethod):
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
         step_ratio = kwargs.get('step', 1.0)
         step_size = step_ratio
-        x_t -= norm_grad * (self.scale  * step_size + 0.25)
+        x_t -= norm_grad * self.scale
         return x_t, norm
 
 class LinearOperator(ABC):
