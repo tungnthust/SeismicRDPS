@@ -22,12 +22,13 @@ import random
 # from piq import ssim, psnr
 from skimage.metrics import structural_similarity, peak_signal_noise_ratio
 from scripts.guided_diffusion.logger import CSVOutputFormat
-from swin import SCRN, ConvTransBlock, Block, WMSA
+# from swin import SCRN, ConvTransBlock, Block, WMSA
 import scipy
 from ssim_util import SSIM
 from ddnm import svd_based_ddnm_plus
 from scripts.functions.svd_replacement import Inpainting
 from gdp import general_cond_fn
+from mask_prediction_net import SCRN, ConvTransBlock, Block, WMSA
 
 ssim_loss = SSIM(11, size_average=True)
 def normalize(image):
@@ -265,9 +266,9 @@ def main():
         model.convert_to_fp16()
     model.eval()
 
-    swin_model = th.load(args.swin_model_path)
-    swin_model.to(device)
-    swin_model.eval()
+    mask_model = th.load(args.mask_model_path)
+    mask_model.to(device)
+    mask_model.eval()
 
     image_size = args.image_size
     
@@ -287,8 +288,10 @@ def main():
     def model_fn(x, t, y=None):
         return model(x, t)
     
-    
-    csvwriter = CSVOutputFormat(f'evaluation_results/result_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}.csv')
+    sampling_method = args.method
+    output_directory = f'samples/{sampling_method}_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}'
+    os.makedirs(output_directory, exist_ok=True)
+    csvwriter = CSVOutputFormat(f'{output_directory}/result_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}.csv')
     n_sample = 0
     for idx, img in enumerate(dataset):
         if n_sample < args.start_idx - 1:
@@ -299,7 +302,6 @@ def main():
         for j in sample_idx:
             spatial_mask[:, j] = 0
         mask = spatial_mask.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
-        measurement_cond_fn = partial(cond_method.conditioning, mask=mask)
         model_kwargs = {}
         if th.cuda.is_available():
             img[0] = th.Tensor(img[0]).to(device)
@@ -308,19 +310,27 @@ def main():
         y = operator.forward(img[0], mask=mask)
         measurement = noiser(y)
         shape = img[0].shape
+        
+        with th.no_grad():
+            pred_mask = mask_model(measurement)
+            binary_mask = (pred_mask > 0.5).float().to(device)
+        accuracy = th.mean(torch.sum(binary_mask * mask, dim=(1,2,3)) / mask.sum(dim=(1,2,3)))
+        print('Mask accuracy: ', accuracy)
+        measurement_cond_fn = partial(cond_method.conditioning, mask=binary_mask)
+        
     
         original = visualize(img[0])
-        if args.method == 'dps':
+        if sampling_method == 'dps':
             sample = sample_fn(model,
                                diffusion,
                                shape,
                                original,
                                measurement,
                                measurement_cond_fn)
-        elif args.method == 'ddnm':
+        elif sampling_method == 'ddnm':
             sample = svd_based_ddnm_plus(model, diffusion, measurement, mask, diffusion.num_timesteps, device)
 
-        elif args.method == 'gdp':
+        elif sampling_method == 'gdp':
             mask = spatial_mask.reshape(-1)
             missing = th.nonzero(mask == 0).long().reshape(-1)
             H_funcs = Inpainting(shape[1], image_size, missing, device)
@@ -335,8 +345,7 @@ def main():
                                         )
 
             
-        with th.no_grad():
-            swin_sample = swin_model(measurement)
+        
             
         masked_image = visualize(measurement)
         sample = visualize(sample)
@@ -347,11 +356,10 @@ def main():
             ssim_score, psnr_score, snr_score = get_metric(original[i], sample[i])
             swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
             
-            np.savez_compressed(f'samples/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]), swin_sample=np.array(swin_sample[i]))
+            np.savez_compressed(f'{output_directory}/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]), swin_sample=np.array(swin_sample[i]))
             print(f"[Diffusion] {n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
             print(f"[Swin] {n_sample}: SSIM: {swin_ssim_score} - PSNR: {swin_psnr_score} - SNR: {swin_snr_score}")
-            csvwriter.writekvs({'id': n_sample, 'diffusion_ssim': ssim_score, 'diffusion_psnr': psnr_score, 'diffusion_snr': snr_score,
-                               'swin_ssim': swin_ssim_score, 'swin_psnr': swin_psnr_score, 'swin_snr': swin_snr_score})
+            csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
             n_sample += 1        
         if n_sample >= args.end_idx:
             break
@@ -365,7 +373,7 @@ def create_argparser():
         schedule_sampler="uniform",
         batch_size=1,
         model_path='',
-        swin_model_path='',
+        mask_model_path='',
         use_fp16=False,
         dataset='F3,Kerry3D',
         mode='validation',
