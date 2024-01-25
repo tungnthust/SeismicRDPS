@@ -1,0 +1,69 @@
+mode: inpaint
+scale: 0
+debug: false
+
+########################################################################
+## algorithm specific configs
+########################################################################
+ddim:
+  ddim_sigma: 0.0
+  schedule_params:
+    num_inference_steps: 1000
+    ddpm_num_steps: 1000
+    schedule_type: linear
+    jump_length: 1
+    jump_n_sample: 1
+    use_timetravel: false
+    time_travel_filter_type: none
+
+resample:
+  keep_n_samples: 2 # n_samples images would be generated, while keep_n_samples images would be returned.
+
+optimize_xt:
+  optimize_xt: true
+  num_iteration_optimize_xt: 2
+  lr_xt: 0.02
+  lr_xt_decay: 1.012
+  use_smart_lr_xt_decay: true
+  use_adaptive_lr_xt: true
+  coef_xt_reg: 0.0001
+  coef_xt_reg_decay: 1.01
+  mid_interval_num: 1
+  optimize_before_time_travel: true
+  filter_xT: false
+
+repaint:
+  schedule_jump_params:
+    t_T: 250
+    n_sample: 1
+    jump_length: 10
+    jump_n_sample: 10
+  inpa_inj_sched_prev: true
+  inpa_inj_sched_prev_cumnoise: false
+
+ddnm:
+  schedule_jump_params:
+    t_T: 1000
+    n_sample: 1
+    jump_length: 1
+    jump_n_sample: 1
+
+ddrm:
+  schedule_jump_params:
+    t_T: 1000
+    n_sample: 1
+    jump_length: 1
+    jump_n_sample: 1
+
+dps:
+  step_size: 1.5
+  eta: 1.0
+  schedule_jump_params:
+    t_T: 250
+    n_sample: 1
+    jump_length: 1
+    jump_n_sample: 1
+  sigma: 0.01
+
+respace_interpolate: false
+class_cond: false
