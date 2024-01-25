@@ -38,7 +38,7 @@ def ddnm_diffusion(x, model, b, eta, A_funcs, y, cls_fn=None, classes=None, conf
             if j<0: j=-1 
 
             if j < i: # normal sampling 
-                t = (torch.ones(n) * i).to(x.device)
+                t = (torch.ones(n) * i).double().to(x.device)
                 next_t = (torch.ones(n) * j).to(x.device)
                 at = compute_alpha(b, t.long())
                 at_next = compute_alpha(b, next_t.long())

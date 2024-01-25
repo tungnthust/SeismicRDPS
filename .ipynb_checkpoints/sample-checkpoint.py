@@ -25,12 +25,78 @@ from scripts.guided_diffusion.logger import CSVOutputFormat
 # from swin import SCRN, ConvTransBlock, Block, WMSA
 import scipy
 from ssim_util import SSIM
-from ddnm import svd_based_ddnm_plus
+from ddnm import simplified_based_ddnm, svd_based_ddnm_plus
 from scripts.functions.svd_replacement import Inpainting
 from gdp import general_cond_fn
 from mask_prediction_net import SCRN, ConvTransBlock, Block, WMSA
-
+from CoPaint.utils.config import Config
+from CoPaint.guided_diffusion import (
+    DDIMSampler,
+    O_DDIMSampler,
+    DDNMSampler,
+    DDRMSampler,
+    DPSSampler,
+)
+from CoPaint.guided_diffusion.script_util import (
+    create_model as create_model_copaint,
+    create_gaussian_diffusion as create_gaussian_diffusion_copaint
+)
 ssim_loss = SSIM(11, size_average=True)
+
+model_params = dict(
+    image_size=128,
+    num_channels=128,
+    num_res_blocks=2,
+    channel_mult="",
+    learn_sigma=True,
+    class_cond=False,
+    use_checkpoint=False,
+    attention_resolutions="32,16,8",
+    num_heads=4,
+    num_heads_upsample=-1,
+    num_head_channels=64,
+    use_scale_shift_norm=True,
+    dropout=0.0,
+    resblock_updown=True,
+    use_fp16=True,
+    use_new_attention_order=False
+)
+
+SAMPLER_CLS = {
+        # "repaint": SpacedDiffusion,
+        "ddim": DDIMSampler,
+        "o_ddim": O_DDIMSampler,
+        # "resample": R_DDIMSampler,
+        "ddnm": DDNMSampler,
+        "ddrm": DDRMSampler,
+        "dps": DPSSampler,
+    }
+
+diffusion_params = dict(
+    diffusion_steps=1000,
+    learn_sigma=True,
+    noise_schedule="cosine",
+    use_kl=False,    
+    predict_xstart=False,
+    rescale_timesteps=False,
+    rescale_learned_sigmas=False,
+    timestep_respacing=""
+)
+
+def prepare_model(algorithm, model_path, config, device):
+    sampler_cls = SAMPLER_CLS[algorithm]
+    copaint_model = create_model_copaint(**model_params)
+    copaint_diffusion = create_gaussian_diffusion_copaint(**diffusion_params, conf=config, base_cls=sampler_cls)
+    copaint_model.load_state_dict(
+        th.load(model_path, map_location="cpu")
+    )
+    copaint_model.to(device)
+    # model.to(device)
+    # if config.use_fp16:
+    copaint_model.convert_to_fp16()
+    copaint_model.eval()
+    return copaint_model, copaint_diffusion
+    
 def normalize(image):
     """Basic min max scaler.
     """
@@ -119,7 +185,7 @@ class ConditioningMethod(ABC):
         weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(th.device('cuda:0'))
         norm = norm * weight + loss * weight * step_ratio * 5
         # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
-#         difference = measurement - x_0_hat
+        # difference = measurement - x_0_hat
 
         # norm = torch.linalg.norm(difference, dim=(2,3))
         grad_outputs = torch.ones_like(norm)
@@ -250,7 +316,8 @@ def p_sample_loop_dps(model,
 def main():
     args = create_argparser().parse_args()
 
-    
+    config = Config(default_config_file="CoPaint/configs/seismic.yaml", use_argparse=False)
+
     dataset = args.dataset
     print("Evaluation on dataset(s): ", dataset)
     ds = SeismicDataset(args.data_dir, mode=args.mode, datasets=dataset.split(','))
@@ -269,12 +336,14 @@ def main():
     mask_model = th.load(args.mask_model_path)
     mask_model.to(device)
     mask_model.eval()
-
+    
+    algorithm = args.algo
+    copaint_model, copaint_diffusion = prepare_model(algorithm, args.model_path, config, device)
     image_size = args.image_size
     
     proportion = args.mask_ratio
     
-    sample_idx = random.sample(range(1, image_size), int((image_size - 1) * proportion))
+    
     
 
     operator = InpaintingOperator(device=device)
@@ -287,7 +356,9 @@ def main():
                                 shuffle=False)
     def model_fn(x, t, y=None):
         return model(x, t)
-    
+    def copaint_model_fn(x, t, y=None, gt=None, **kwargs):
+        return copaint_model(x, t, y if config.class_cond else None, gt=gt)
+        
     sampling_method = args.method
     output_directory = f'samples/{sampling_method}_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}'
     os.makedirs(output_directory, exist_ok=True)
@@ -297,24 +368,27 @@ def main():
         if n_sample < args.start_idx - 1:
             n_sample += img[0].shape[0]
             continue
-        
-        spatial_mask = th.ones((image_size, image_size))
-        for j in sample_idx:
-            spatial_mask[:, j] = 0
-        mask = spatial_mask.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
+        spatial_mask = []
+        for i in range(img[0].shape[0]):
+            mask_i = th.ones((image_size, image_size))
+            sample_idx = random.sample(range(1, image_size), int((image_size - 1) * proportion))
+            for j in sample_idx:
+                mask_i[:, j] = 0
+            spatial_mask.append(mask_i)
+        spatial_mask = th.stack(spatial_mask).unsqueeze(1).to(device)
         model_kwargs = {}
         if th.cuda.is_available():
             img[0] = th.Tensor(img[0]).to(device)
         sample_fn = p_sample_loop_dps 
         
-        y = operator.forward(img[0], mask=mask)
+        y = operator.forward(img[0], mask=spatial_mask)
         measurement = noiser(y)
         shape = img[0].shape
         
         with th.no_grad():
             pred_mask = mask_model(measurement)
             binary_mask = (pred_mask > 0.5).float().to(device)
-        accuracy = th.mean(torch.sum(binary_mask * mask, dim=(1,2,3)) / mask.sum(dim=(1,2,3)))
+        accuracy = th.mean(torch.sum(binary_mask * spatial_mask, dim=(1,2,3)) / spatial_mask.sum(dim=(1,2,3)))
         print('Mask accuracy: ', accuracy)
         measurement_cond_fn = partial(cond_method.conditioning, mask=binary_mask)
         
@@ -328,11 +402,12 @@ def main():
                                measurement,
                                measurement_cond_fn)
         elif sampling_method == 'ddnm':
-            sample = svd_based_ddnm_plus(model, diffusion, measurement, mask, diffusion.num_timesteps, device)
-
+            sample = simplified_based_ddnm(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
+            # sample = svd_based_ddnm_plus(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
+            
         elif sampling_method == 'gdp':
-            mask = spatial_mask.reshape(-1)
-            missing = th.nonzero(mask == 0).long().reshape(-1)
+            mask = spatial_mask.reshape(img[0].shape[0], -1)
+            missing = th.stack([th.nonzero(mask[i] == 0) for i in range(img[0].shape[0])]).long().reshape(img[0].shape[0], -1)
             H_funcs = Inpainting(shape[1], image_size, missing, device)
             cond_fn = lambda x,t : general_cond_fn(H_funcs, x, t, x_lr=measurement, sample_noisy_x_lr=True, diffusion=diffusion, sample_noisy_x_lr_t_thred=1e8)
             sample = diffusion.p_sample_loop(model_fn,
@@ -344,15 +419,30 @@ def main():
                                             progress=True
                                         )
 
-            
-        
+        elif sampling_method == 'copaint':
+            model_kwargs = {
+                    "gt": measurement,
+                    "gt_keep_mask": binary_mask,
+            }
+            sample = copaint_diffusion.p_sample_loop(
+                copaint_model_fn,
+                shape=shape,
+                model_kwargs=model_kwargs,
+                cond_fn=None,
+                device=device,
+                progress=True,
+                return_all=True,
+                conf=config,
+                sample_dir=None,
+            )
+            sample = sample['sample']
             
         masked_image = visualize(measurement)
         sample = visualize(sample)
         # swin_sample = visualize(swin_sample)
         # spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(3)
         # final = sample * (1 - spatial_mask) + original * spatial_mask
-        for i in range(batch_size):
+        for i in range(img[0].shape[0]):
             ssim_score, psnr_score, snr_score = get_metric(original[i], sample[i])
             # swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
             
@@ -384,7 +474,8 @@ def create_argparser():
         gradient_scale=0.5,
         start_idx=0,
         end_idx=-1,
-        method='dps'
+        method='dps',
+        algo='o_ddim'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
