@@ -117,10 +117,10 @@ class Inpainting(H_functions):
     def __init__(self, channels, img_dim, missing_indices, device):
         self.channels = channels
         self.img_dim = img_dim
-        self.batch_size = missing_indices.shape[0]
+        self.batch_size = len(missing_indices)
         self._singulars = [torch.ones(channels * img_dim**2 - missing_indices[i].shape[0]).to(device) for i in range(self.batch_size)]
         self.missing_indices = missing_indices
-        self.kept_indices = torch.Tensor([[i for i in range(channels * img_dim**2) if i not in missing_indices[j]] for j in range(missing_indices.shape[0])]).to(device).long()
+        self.kept_indices = [torch.Tensor([i for i in range(channels * img_dim**2) if i not in missing_indices[j]]).to(device).long() for j in range(self.batch_size)]
 
     def V(self, vec):
         temp = vec.clone().reshape(vec.shape[0], -1)

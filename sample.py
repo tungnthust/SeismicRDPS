@@ -33,6 +33,7 @@ from CoPaint.utils.config import Config
 from CoPaint.guided_diffusion import (
     DDIMSampler,
     O_DDIMSampler,
+    R_DDIMSampler,
     DDNMSampler,
     DDRMSampler,
     DPSSampler,
@@ -66,7 +67,7 @@ SAMPLER_CLS = {
         # "repaint": SpacedDiffusion,
         "ddim": DDIMSampler,
         "o_ddim": O_DDIMSampler,
-        # "resample": R_DDIMSampler,
+        "resample": R_DDIMSampler,
         "ddnm": DDNMSampler,
         "ddrm": DDRMSampler,
         "dps": DPSSampler,
@@ -422,8 +423,8 @@ def main():
             sample = sample['sample']
             
         elif sampling_method == 'gdp':
-            mask = spatial_mask.reshape(img[0].shape[0], -1)
-            missing = th.stack([th.nonzero(mask[i] == 0) for i in range(img[0].shape[0])]).long().reshape(img[0].shape[0], -1)
+            mask = binary_mask.reshape(img[0].shape[0], -1)
+            missing = [th.nonzero(mask[i] == 0).squeeze() for i in range(img[0].shape[0])]
             H_funcs = Inpainting(shape[1], image_size, missing, device)
             cond_fn = lambda x,t : general_cond_fn(H_funcs, x, t, x_lr=measurement, sample_noisy_x_lr=True, diffusion=diffusion, sample_noisy_x_lr_t_thred=1e8)
             sample = diffusion.p_sample_loop(model_fn,

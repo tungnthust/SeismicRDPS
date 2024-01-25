@@ -257,10 +257,10 @@ class R_DDIMSampler(DDIMSampler):
             indices_r = torch.multinomial(torch.tensor(r), R)
             for i in indices_r:
                 added_indices.append(i)
-        logging_info(
-            "Indices after Resampling: %s"
-            % (" ".join(["%.d" % i for i in sorted(added_indices)]))
-        )
+        # logging_info(
+        #     "Indices after Resampling: %s"
+        #     % (" ".join(["%.d" % i for i in sorted(added_indices)]))
+        # )
         return added_indices
 
     @staticmethod
@@ -306,10 +306,10 @@ class R_DDIMSampler(DDIMSampler):
             if pred_x0 is not None
             else None
         )
-        logging_info(
-            "Resampling with probability %s" % (
-                " ".join(["%.3lf" % i for i in p]))
-        )
+        # logging_info(
+        #     "Resampling with probability %s" % (
+        #         " ".join(["%.3lf" % i for i in p]))
+        # )
         return x_t, x_pred_prev, pred_x0
 
     def p_sample_loop(
