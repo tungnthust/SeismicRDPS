@@ -402,8 +402,24 @@ def main():
                                measurement,
                                measurement_cond_fn)
         elif sampling_method == 'ddnm':
-            sample = simplified_based_ddnm(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
+            # sample = simplified_based_ddnm(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
             # sample = svd_based_ddnm_plus(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
+            model_kwargs = {
+                    "gt": measurement,
+                    "gt_keep_mask": binary_mask,
+            }
+            sample = copaint_diffusion.p_sample_loop(
+                copaint_model_fn,
+                shape=shape,
+                model_kwargs=model_kwargs,
+                cond_fn=None,
+                device=device,
+                progress=True,
+                return_all=True,
+                conf=config,
+                sample_dir=None,
+            )
+            sample = sample['sample']
             
         elif sampling_method == 'gdp':
             mask = spatial_mask.reshape(img[0].shape[0], -1)
