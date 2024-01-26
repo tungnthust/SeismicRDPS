@@ -65,12 +65,13 @@ class DWT_2D(Module):
               hfc_hh: (N, C, H/2, W/2)
     """
 
-    def __init__(self, wavename):
+    def __init__(self, wavename, device):
         """
         2D discrete wavelet transform (DWT) for 2D image decomposition
         :param wavename: pywt.wavelist(); in the paper, 'chx.y' denotes 'biorx.y'.
         """
         super(DWT_2D, self).__init__()
+        self.device = device
         wavelet = pywt.Wavelet(wavename)
         self.band_low = wavelet.rec_lo
         self.band_high = wavelet.rec_hi
@@ -143,7 +144,7 @@ class DWT_2D(Module):
         self.input_height = input.size()[-2]
         self.input_width = input.size()[-1]
         self.get_matrix()
-        return DWTFunction_2D.apply(input, self.matrix_low_0, self.matrix_low_1, self.matrix_high_0, self.matrix_high_1)
+        return DWTFunction_2D.apply(input, self.matrix_low_0.to(self.device), self.matrix_low_1.to(self.device), self.matrix_high_0.to(self.device), self.matrix_high_1.to(self.device))
 
 
 class IDWT_2D(Module):

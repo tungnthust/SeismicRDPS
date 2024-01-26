@@ -126,11 +126,12 @@ import torch
 from wavelet_util import DWT_2D
 
 class ConditioningMethod(ABC):
-    def __init__(self, operator, noiser, **kwargs):
+    def __init__(self, operator, noiser, device, **kwargs):
         self.operator = operator
         self.noiser = noiser
-        self.dwt = DWT_2D("haar")
-        
+        self.device = device
+        self.dwt = DWT_2D("haar", device=self.device)
+              
     def project(self, data, noisy_measurement, **kwargs):
         return self.operator.project(data=data, measurement=noisy_measurement, **kwargs)
     
@@ -169,7 +170,7 @@ class ConditioningMethod(ABC):
         
         for i in range(x_0_hat.shape[0]):
             measurement_filter[i][0] = scipy.ndimage.gaussian_filter(measurement[i][0].cpu().numpy(), 0.05) 
-        measurement_filter = th.tensor(measurement_filter).to(th.device('cuda:0'))
+        measurement_filter = th.tensor(measurement_filter).to(self.device)
         mLL, mLH, mHL, mHH = self.dwt(measurement_filter)
         step_ratio = kwargs.get('step', 1.0)
         measurement_filter = th.cat((mLL, mLH, mHL, mHH), dim=1) / 2.0
@@ -183,7 +184,7 @@ class ConditioningMethod(ABC):
         # print(norm.shape)
         difference = measurement_filter - x
         norm = torch.linalg.norm(difference, dim=(2,3))
-        weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(th.device('cuda:0'))
+        weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(self.device)
         norm = norm * weight + loss * weight * step_ratio * 5
         # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
         # difference = measurement - x_0_hat
@@ -209,8 +210,8 @@ class ConditioningMethod(ABC):
 
 
 class PosteriorSampling(ConditioningMethod):
-    def __init__(self, operator, noiser, **kwargs):
-        super().__init__(operator, noiser)
+    def __init__(self, operator, noiser, device, **kwargs):
+        super().__init__(operator, noiser, device)
         self.scale = kwargs.get('scale', 1.0)
 
     def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs):
@@ -277,7 +278,8 @@ def p_sample_loop_dps(model,
                       shape,
                       original,
                       measurement,
-                      measurement_cond_fn):
+                      measurement_cond_fn,
+                      device):
         """
         The function used for sampling from noise.
         """ 
@@ -299,6 +301,7 @@ def p_sample_loop_dps(model,
             img, distance = measurement_cond_fn(x_t=out['sample'],
                                       measurement=measurement,
                                       step=idx/diffusion.num_timesteps,
+                                      device=device,
                                       # noisy_measurement=noisy_measurement,
                                       x_prev=img,
                                       x_0_hat=out['pred_xstart'])
@@ -349,7 +352,7 @@ def main():
 
     operator = InpaintingOperator(device=device)
     noiser = GaussianNoise(sigma=args.noise_scale)
-    cond_method = PosteriorSampling(operator=operator, noiser=noiser, scale=args.gradient_scale)
+    cond_method = PosteriorSampling(operator=operator, noiser=noiser, device=device, scale=args.gradient_scale)
     batch_size = args.batch_size
     dataset = th.utils.data.DataLoader(
                                 ds,
@@ -365,6 +368,9 @@ def main():
     os.makedirs(output_directory, exist_ok=True)
     csvwriter = CSVOutputFormat(f'{output_directory}/result_mask:{proportion}_noise:{args.noise_scale}_{args.start_idx}_{args.end_idx}.csv')
     n_sample = 0
+    ssim_agg = 0
+    psnr_agg = 0
+    snr_agg = 0
     for idx, img in enumerate(dataset):
         if n_sample < args.start_idx - 1:
             n_sample += img[0].shape[0]
@@ -401,7 +407,8 @@ def main():
                                shape,
                                original,
                                measurement,
-                               measurement_cond_fn)
+                               measurement_cond_fn,
+                               device=device)
         elif sampling_method == 'ddnm':
             # sample = simplified_based_ddnm(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
             # sample = svd_based_ddnm_plus(model, diffusion, measurement, spatial_mask, diffusion.num_timesteps, device)
@@ -462,12 +469,15 @@ def main():
         for i in range(img[0].shape[0]):
             ssim_score, psnr_score, snr_score = get_metric(original[i], sample[i])
             # swin_ssim_score, swin_psnr_score, swin_snr_score = get_metric(original[i], swin_sample[i])
-            
+            ssim_agg += ssim_score
+            psnr_agg += psnr_score
+            snr_agg += snr_score
             np.savez_compressed(f'{output_directory}/sample{n_sample}', original=np.array(original[i]), masked_image=np.array(masked_image[i]), diffusion_sample=np.array(sample[i]))
-            print(f"[Diffusion] {n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
+            print(f"{n_sample}: SSIM: {ssim_score} - PSNR: {psnr_score} - SNR: {snr_score}")
             # print(f"[Swin] {n_sample}: SSIM: {swin_ssim_score} - PSNR: {swin_psnr_score} - SNR: {swin_snr_score}")
             csvwriter.writekvs({'id': n_sample, 'ssim': ssim_score, 'psnr': psnr_score, 'snr': snr_score})
             n_sample += 1        
+        print(f"Accumulated Average: SSIM: {ssim_agg/n_sample} - PSNR: {psnr_agg/n_sample} - SNR: {snr_agg/n_sample}")
         if n_sample >= args.end_idx:
             break
         # metrics = zip(ssim_scores, psnr_scores, snr_scores)
