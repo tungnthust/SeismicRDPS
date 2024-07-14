@@ -5,9 +5,6 @@ import os
 sys.path.append("..")
 sys.path.append(".")
 from scripts.guided_diffusion.dataloader import SeismicDataset
-import torch.distributed as dist
-from scripts.guided_diffusion import dist_util
-from scripts.guided_diffusion.resample import create_named_schedule_sampler
 from scripts.guided_diffusion.script_util_x0 import (
     model_and_diffusion_defaults,
     create_model_and_diffusion,
@@ -23,12 +20,9 @@ import random
 from skimage.metrics import structural_similarity, peak_signal_noise_ratio
 from scripts.guided_diffusion.logger import CSVOutputFormat
 # from swin import SCRN, ConvTransBlock, Block, WMSA
-import scipy
 from ssim_util import SSIM
-from ddnm import simplified_based_ddnm, svd_based_ddnm_plus
 from scripts.functions.svd_replacement import Inpainting
 from gdp import general_cond_fn
-from mask_prediction_net import SCRN, ConvTransBlock, Block, WMSA
 from CoPaint.utils.config import Config
 from CoPaint.guided_diffusion import (
     DDIMSampler,
@@ -64,7 +58,6 @@ model_params = dict(
 )
 
 SAMPLER_CLS = {
-        # "repaint": SpacedDiffusion,
         "ddim": DDIMSampler,
         "o_ddim": O_DDIMSampler,
         "resample": R_DDIMSampler,
@@ -92,8 +85,6 @@ def prepare_model(algorithm, model_path, config, device):
         th.load(model_path, map_location="cpu")
     )
     copaint_model.to(device)
-    # model.to(device)
-    # if config.use_fp16:
     copaint_model.convert_to_fp16()
     copaint_model.eval()
     return copaint_model, copaint_diffusion
@@ -123,85 +114,25 @@ def visualize(sample):
 
 from abc import ABC, abstractmethod
 import torch
-from wavelet_util import DWT_2D
 
 class ConditioningMethod(ABC):
     def __init__(self, operator, noiser, device, **kwargs):
         self.operator = operator
         self.noiser = noiser
         self.device = device
-        self.dwt = DWT_2D("haar", device=self.device)
               
     def project(self, data, noisy_measurement, **kwargs):
         return self.operator.project(data=data, measurement=noisy_measurement, **kwargs)
     
     def grad_and_value(self, x_prev, x_0_hat, measurement, **kwargs):
-#         if self.noiser.__name__ == 'gaussian':
-#         norm = []
-#         norm_grads = []
-#         for i in range(x_prev.shape[0]):
-#             x_i = x_prev[i]
-#             x_i = x_i.unsqueeze(0)
-#             difference_i = measurement[i].unsqueeze(0) - x_0_hat[i].unsqueeze(0) * kwargs.get('mask', None)[i]
-#         # difference = measurement - x_0_hat
-
-#             norm_i = torch.linalg.norm(difference_i)
-#             norm_grad_i = torch.autograd.grad(outputs=norm_i, inputs=x_i, allow_unused=True, materialize_grads=True)[0]
-#             norm_grads.append(norm_grad_i[0])
-#             norm.append(norm_i)
-        
-# #         elif self.noiser.__name__ == 'poisson':
-# #             Ax = self.operator.forward(x_0_hat, **kwargs)
-# #             difference = measurement-Ax
-# #             norm = torch.linalg.norm(difference) / measurement.abs()
-# #             norm = norm.mean()
-# #             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
-
-# #         else:
-# #             raise NotImplementedError
-             
-#         return th.stack(norm_grads), th.stack(norm).mean()
-        x_0_hat = self.operator.forward(x_0_hat, **kwargs)
-        xLL, xLH, xHL, xHH = self.dwt(x_0_hat)
-
-        x = th.cat((xLL, xLH, xHL, xHH), dim=1) / 2.0
-        
-        measurement_filter = th.clone(measurement).cpu().numpy()
-        
-        for i in range(x_0_hat.shape[0]):
-            measurement_filter[i][0] = scipy.ndimage.gaussian_filter(measurement[i][0].cpu().numpy(), 0.05) 
-        measurement_filter = th.tensor(measurement_filter).to(self.device)
-        mLL, mLH, mHL, mHH = self.dwt(measurement_filter)
-        step_ratio = kwargs.get('step', 1.0)
-        measurement_filter = th.cat((mLL, mLH, mHL, mHH), dim=1) / 2.0
-        
-        # norm = th.zeros((x.shape[0], 4)).to(th.device('cuda:0'))
-        # for _ in range(5):
-        #     # difference = measurement - self.operator.forward(x_0_hat, **kwargs)
-        #     x_0_hat_noise = x + 0.00001 * torch.rand_like(x)
-        loss = ssim_loss(measurement_filter, x)
-        full_loss = ssim_loss(measurement, x_0_hat)
-        # print(norm.shape)
-        difference = measurement_filter - x
+        x = self.operator.forward(x_0_hat, **kwargs)        
+       
+        difference = measurement - x
         norm = torch.linalg.norm(difference, dim=(2,3))
-        weight = th.tensor([1.75, 1.25, 1.75, 1.0]).unsqueeze(0).repeat(x.shape[0], 1).to(self.device)
-        norm = norm * weight + loss * weight * step_ratio * 5
-        # norm = th.matmul(norm, th.tensor([[0.25], [0.25], [0.25], [0.25]]).to(th.device('cuda:0')))
-        # difference = measurement - x_0_hat
-
-        # norm = torch.linalg.norm(difference, dim=(2,3))
+        
         grad_outputs = torch.ones_like(norm)
         norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev, grad_outputs=grad_outputs)[0]
-        
-#         elif self.noiser.__name__ == 'poisson':
-#             Ax = self.operator.forward(x_0_hat, **kwargs)
-#             difference = measurement-Ax
-#             norm = torch.linalg.norm(difference) / measurement.abs()
-#             norm = norm.mean()
-#             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
-
-#         else:
-#             raise NotImplementedError
+    
              
         return norm_grad, norm.mean()
     @abstractmethod
@@ -216,9 +147,7 @@ class PosteriorSampling(ConditioningMethod):
 
     def conditioning(self, x_prev, x_t, x_0_hat, measurement, **kwargs):
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, measurement=measurement, **kwargs)
-        step_ratio = kwargs.get('step', 1.0)
-        step_size = step_ratio
-        x_t -= norm_grad * (self.scale  * step_size + 0.25)
+        x_t -= norm_grad * self.scale 
         return x_t, norm
 
 class LinearOperator(ABC):
@@ -306,14 +235,10 @@ def p_sample_loop_dps(model,
                                       x_prev=img,
                                       x_0_hat=out['pred_xstart'])
             img = img.detach_()
-
-            outs = visualize(out['pred_xstart'])
             # spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(3)
             # final = sample * (1 - spatial_mask) + original * spatial_mask
-            for i in range(outs.shape[0]):
-                ssim_score, psnr_score, snr_score = get_metric(original[i], outs[i])
            
-            pbar.set_postfix({'distance': distance.item(), 'ssim': ssim_score}, refresh=False)
+            pbar.set_postfix({'distance': distance.item()}, refresh=False)
 
         return out['pred_xstart']       
 
