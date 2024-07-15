@@ -28,5 +28,5 @@ python3 sample.py $MODEL_FLAGS $MODEL_PATH $SAMPLE_FLAGS --cuda_devices '0' --ba
 This implementation is based on / inspired by:
 - [https://github.com/openai/guided-diffusion](https://github.com/openai/guided-diffusion) (the Guided Diffusion repo),
 - [https://github.com/UCSB-NLP-Chang/CoPaint](https://github.com/UCSB-NLP-Chang/CoPaint) (the CoPaint repo),
-- [https://github.com/Fayeben/GenerativeDiffusionPrior](https://github.com/Fayeben/GenerativeDiffusionPrior) (the GDP repo),
-- [https://github.com/DPS2022/diffusion-posterior-sampling](https://github.com/DPS2022/diffusion-posterior-sampling) (the DPS repo), and
+- [https://github.com/Fayeben/GenerativeDiffusionPrior](https://github.com/Fayeben/GenerativeDiffusionPrior) (the GDP repo), and
+- [https://github.com/DPS2022/diffusion-posterior-sampling](https://github.com/DPS2022/diffusion-posterior-sampling) (the DPS repo).
